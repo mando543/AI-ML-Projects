@@ -1,0 +1,115 @@
+---
+title: "KMNIST Classification with PyTorch in R"
+author: "Muhammad Ali Kazi"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    theme: readable
+    code_folding: hide
+---
+
+knitr::opts_chunk$set(
+  echo = TRUE,
+  fig.width = 5,
+  fig.asp = 0.618,
+  dpi = 120,
+  warning = FALSE,
+  message = FALSE
+)
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(torch)
+  library(torchvision)
+  library(luz)
+})
+
+train_ds <- kmnist_dataset(
+  "imagesk",
+  download = TRUE,
+  transform = transform_to_tensor() %>%
+    torch_flatten(start_dim = 2)
+)
+
+test_ds <- kmnist_dataset(
+  "imagesk",
+  download = TRUE,
+  train = FALSE,
+  transform = transform_to_tensor() %>%
+    torch_flatten(start_dim = 2)
+)
+
+train_ds <- dataset_subset(train_ds, indices = 1001:2024)
+valid_ds <- dataset_subset(train_ds, indices = 1:512)
+test_ds  <- dataset_subset(test_ds, indices = 1:512)
+
+train_dl <- dataloader(train_ds, batch_size = 32, shuffle = TRUE)
+valid_dl <- dataloader(valid_ds, batch_size = 32, shuffle = FALSE)
+test_dl  <- dataloader(test_ds, batch_size = 32, shuffle = FALSE)
+
+drop_prefix <- function(s) {
+  str_extract(s, "\\d+")
+}
+
+visualize_image <- function(batch, x) {
+  batch$x[x] %>%
+    torch_reshape(c(28, 28)) %>%
+    as_array() %>%
+    as.data.frame() %>%
+    rename_with(drop_prefix, everything()) %>%
+    mutate(r = row_number(), .before = `1`) %>%
+    pivot_longer(cols = matches("\\d+"), names_to = "c") %>%
+    mutate(
+      c = as.integer(c),
+      value = as.integer(value * 255)
+    ) %>%
+    ggplot(aes(x = c, y = -r, fill = value)) +
+    geom_tile() +
+    scale_fill_gradient(low = "white", high = "black") +
+    labs(
+      title = "KMNIST Sample Image",
+      x = "",
+      y = "",
+      fill = "Intensity"
+    )
+}
+
+batch <- train_dl$.iter()$.next()
+batch[[1]]$size()
+
+net <- nn_module(
+  "kmnist_model",
+  initialize = function() {
+    self$net <- nn_sequential(
+      nn_linear(784, 128),
+      nn_relu(),
+      nn_linear(128, 10)
+    )
+  },
+  forward = function(x) {
+    self$net(x)
+  }
+)
+
+model <- net %>%
+  setup(
+    loss = nn_cross_entropy_loss(),
+    optimizer = optim_adam,
+    metrics = list(luz_metric_accuracy())
+  )
+
+acc <- accelerator(cpu = TRUE)
+
+fitted_model <- model %>%
+  fit(
+    train_dl,
+    epochs = 10,
+    valid_data = valid_dl,
+    accelerator = acc
+  )
+
+plot(fitted_model)
+
+evaluate(fitted_model, test_dl, accelerator = acc)
